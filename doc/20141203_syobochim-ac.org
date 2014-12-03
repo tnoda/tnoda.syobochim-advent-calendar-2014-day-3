@@ -1,0 +1,296 @@
+#+OPTIONS: creator:nil
+
+この記事は [[http://www.adventar.org/calendars/327][しょぼちむ Advent Calendar 2014]] 3 日目の記事です．
+
+* はじめに
+
+しょぼちむとは，夜間休日には Kotlin アイドル（10 月から Clojure アイドル兼任）として活動する関東在住の SE だそうです．「だそうです」というのも，本名，年齢，誕生日，メールアドレス，勤務先，出身地，出身大学，女子力，など，その多くが謎に包まれており，Twitter のタイムラインから得られる情報以上のことが分からないからです．近影についても同様で，顔が映りこまないようにわざわざ手で隠すことが多いようです．
+
+そこで，Clojure アイドルとして活動する SE が顔を隠す作業を自動化できるように，この記事では OpenCV でこの作業を自動化することを考えます．
+
+
+* OpenCV のインストールと Clojure からの利用
+
+今回は，OpenCV の Java バインディングをローカルの Maven リポジトリにインストールします．
+また，Leiningen プロジェクトを作成し，簡単な OpenCV 利用の例として顔認識を行います．
+OpenCV の Java バインディングは Java のクラスファイルだけでなくネイティブライブラリも含むため，
+利用には一工夫必要です．
+
++ OpenCV 2.4.10
++ Clojure 1.6.0
+
+
+** OpenCV の Java バインディングの作成
+
+まずは OpenCV をインストールします．
+Clojure から利用できるように Java バインディング付きでインストールしておきましょう．
+Mac OS X を使っているのであれば，Homebrew で簡単にインストールできるはずです．
+
+無事成功した人は，この節の続きを読み飛ばしてください．以下，失敗パターンと対象法です．
+
+#+begin_src sh
+$ pip install numpy
+
+$ brew tap homebrew/science
+
+$ brew install --with-java opencv
+==> Installing opencv from homebrew/homebrew-science
+==> Downloading https://github.com/Itseez/opencv/archive/2.4.9.tar.gz
+...
+make[2]: *** [bin/opencv-249.jar] Error 1
+make[1]: *** [modules/java/CMakeFiles/opencv_java.dir/all] Error 2
+make: *** [all] Error 2
+#+end_src
+
+．．．失敗しました．
+今度はソースからコンパイルすることにします．
+
+#+begin_src sh
+$ git clone https://github.com/Itseez/opencv
+
+$ mkdir build
+
+$ cd build/
+
+$ cmake -DBUILD_SHARED_LIBS=OFF -DWITH_FFMPEG=OFF  ..
+
+$ make -j4
+...
+[ 90%] Generating opencv-2410.jar
+Target 'jar' failed with message 'Class not found: javac1.8'.
+#+end_src
+
+今度も失敗しましたが，
+このエラーによると Ant が古くて Java 8 に対応していないように思えます．
+念のため確認してみます．
+
+#+begin_src sh
+$ ant -version
+Apache Ant(TM) version 1.8.4 compiled on November 8 2012
+#+end_src
+
+手元の Ant は 1.8 でした．
+このバージョンの Ant は Java 7 までにしか対応していないので，
+Java 7 でコンパイルします．
+
+#+begin_src sh
+$ JAVA_HOME=`/usr/libexec/java_home -v 1.7`; make -j4
+...
+BUILD SUCCESSFUL
+Total time: 4 seconds
+[100%] Built target opencv_test_java
+#+end_src
+
+踏む可能性のある地雷を一通り全て踏んだところで，
+今度は成功となりました．
+
+
+** Maven ローカルリポジトリへのインストール
+
+作成した Java バインディングを Leiningen から利用できるように，
+Maven のローカルリポジトリにインストールしましょう．
+OpenCV を Java から利用するために必要なファイルは，
+
++ ~bin/opencv-2410.jar~
++ ~lib/libopencv_java2410.dylib~
+
+の 2 つです．
+opencv-2410.jar はそのまま Maven リポジトリにインストールできるとして，
+~.dylib~ は ~jar~ コマンドで jar ファイルにパッケージングする必要があります．
+
+#+begin_src sh
+$ cd bin/
+
+$ mkdir -p native/macosx/x86_64
+
+$ cp ../lib/libopencv_java2410.dylib native/macosx/x86_64/
+
+$ jar -cMf opencv-native-2410.jar native
+
+$ ls *.jar
+opencv-2410.jar  opencv-native-2410.jar
+#+end_src
+
+これで 2 つの jar ファイルを用意できました．
+これら 2 つの jar ファイルをローカルの Maven リポジトリにインストールするために，
+Leiningen の lein-localrepo プラグインを利用します．
+
+lein-localrepo プラグインの最新バージョンは 0.5.3 ですので，
+~profiles.clj~ ファイルに
+
+#+begin_src clojure
+{:user {:plugins [[lein-localrepo "0.5.3"]]}}
+#+end_src
+
+を追加します．あとは，
+~lein localrepo~ コマンドを実行するだけです．
+
+#+begin_src sh
+$ lein localrepo install opencv-2410.jar opencv/opencv 2.4.10
+
+$ lein localrepo install opencv-native-2410.jar opencv/opencv-native 2.4.10
+#+end_src
+
+
+** Leininge プロジェクトの作成と OpenCV を使うための設定
+
+それでは，
+~lein new~ コマンドでプロジェクトを作っていきましょう．
+
+#+begin_src sh
+$ lein new tnoda.syobochim-advent-calendar-2014
+#+end_src
+
+次に ~project.clj~ を編集して，
+ローカルの Maven リポジトリにインストールした
+OpenCV の Java バインディングを利用できるようにします．
+
+#+begin_src clojure
+(defproject tnoda.syobochim-advent-calendar-2014 "0.1.0-SNAPSHOT"
+  :description "A sample project using OpenCV"
+  :url "https://github.com/tnoda/tnoda.syobochim-advent-calendar-2014"
+  :license {:name "Eclipse Public License"
+            :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :dependencies [[org.clojure/clojure "1.6.0"]
+                 [opencv/opencv "2.4.10"]
+                 [opencv/opencv-native "2.4.10"]])
+#+end_src
+
+
+** ネイティブライブラリを Clojure で使うときのおまじない
+
+ここまで設定すると，REPL で OpenCV を使うことができます．
+早速試してみます．手始めに， ~Mat~ で ~double~ の 7x7 行列を作ってみます．
+
+#+begin_src clojure
+user=> (import '[org.opencv.core Mat CvType])
+org.opencv.core.CvType
+
+user=> (def m (Mat. 7 7 CvType/CV_64F))
+CompilerException java.lang.reflect.InvocationTargetException, compiling:(form-init400412585733312455.clj:1:1) 
+#+end_src
+
+CompilerException?
+
+#+begin_src clojure
+user=> (Mat.)
+UnsatisfiedLinkError org.opencv.core.Mat.n_Mat()J  org.opencv.core.Mat.n_Mat (Mat.java:-2)
+#+end_src
+
+UnsatisfiedLinkError!
+
+これを見て分かるように， ~import~ しただけではネイティブライブラリは自動的にロードされないようです．
+仕方がないので，手動でロードすることにします．
+
+#+begin_src clojure
+user=> (clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)
+nil
+
+user=> (def m (Mat. 7 7 CvType/CV_64F))
+#'user/m
+#+end_src
+
+今度はうまくいきました．
+
+
+** OpenCV の Hello World.「顔認識」
+
+さて，環境設定が整いましたので，いよいよ「顔認識」を実行します．
+といっても，顔全体を検出するのはよくあるパターンなので，
+目，鼻，口，各パーツで検出器を用意して，それぞれ隠すことを目標にします．
+
+始める前に，顔認識で使用する画像 (~face.png~) は各自でご用意ください．
+顔認識アルゴリズムの設定ファイル (~haarcascade_*.xml~)
+と合わせて ~resources~ にコピーしておきます．
+
+#+begin_src sh
+$ cp ~/Desktop/face.png resources/
+
+$ cp ../opencv/data/haarcascades/haarcascade_*.xml resources/
+#+end_src
+
+あとは書くだけです:
+
+#+begin_src clojure
+(ns tnoda.syobochim-advent-calendar-2014
+  (:import (org.opencv.core Core Mat MatOfRect MatOfPoint Point Rect Scalar CvType)
+           org.opencv.highgui.Highgui
+           org.opencv.objdetect.CascadeClassifier)
+  (:require [clojure.java.io :as io]))
+
+(defn- resource-path
+  [path]
+  (-> path io/resource .getPath))
+
+(defn- rect->radius
+  [^Rect r]
+  (-> (max (.width r) (.height r))
+      (/ 1.4)
+      long))
+
+(defn- rect->center
+  [^Rect r]
+  (let [x (.x r)
+        y (.y r)
+        w (.width r)
+        h (.height r)]
+    (Point. (+ x (quot w 2)) (+ y (quot h 2)))))
+
+(defn -main
+  [& args]
+  (clojure.lang.RT/loadLibrary org.opencv.core.Core/NATIVE_LIBRARY_NAME)
+  (let [img (-> args first resource-path Highgui/imread)
+        xmls ["haarcascade_eye.xml"
+              "haarcascade_mcs_mouth.xml"
+              "haarcascade_mcs_nose.xml"]
+        xml->detector #(CascadeClassifier. (resource-path %))
+        detectors (map xml->detector xmls)
+        detect (fn
+                 [^CascadeClassifier c]
+                 (let [res (MatOfRect.)]
+                   (.detectMultiScale c img res)
+                   (.toArray res)))
+        fill-green (fn
+                     [^Rect r]
+                     (Core/circle img
+                                  (rect->center r)
+                                  (rect->radius r)
+                                  (Scalar. 0 255 0)
+                                  -1))]
+    (->> detectors
+         (mapcat detect)
+         (map fill-green)
+         dorun)
+    (Highgui/imwrite "face2.jpg", img)))
+#+end_src
+
+これで準備は全て整いました． ~lein run~ で実行してみましょう．
+
+#+begin_src clojure
+$ lein run -m tnoda.syobochim-advent-calendar-2014 face.png
+#+end_src
+
+カレントディレクトリに ~face2.jpg~ が作成されるので確認してみましょう．
+
+
+#+BEGIN_HTML
+<iframe src="https://www.flickr.com/photos/70859183@N07/15717845162/in/set-72157648728443859/player/" width="375" height="450" frameborder="0" allowfullscreen webkitallowfullscreen mozallowfullscreen oallowfullscreen msallowfullscreen></iframe>
+#+END_HTML
+
+
+多数の false positives を出しながらも，目標の，目，鼻，口を検出することができました．
+
+
+** おわりに
+
+今回は OpenCV の Java バインディングを使って，顔画像から，目・口・鼻を検出してみました．
+OpenCV は Maven リポジトリで配布されておらず，また，ネイティブライブラリを含むため，
+利用のための一手間を解説しました:
+
++ ネイティブライブラリの jar の作成
+  - ~native~ ディレクトリ以下にライブラリを格納して ~jar~ コマンドで作成
++ ローカルの Maven リポジトリへのインストール
+  - ~lein-localrepo~ プラグインの利用
++ ネイティブライブラリのロード
+  - ネイティブライブラリは ~import~ ではロードされず
+  - ~clojure.lang.RT/loadLibrary~ での明示的なロードが必要
